@@ -1,83 +1,154 @@
 #include <iostream>
 #include <vector>
-#include <unordered_map>
 #include <string>
-#include <fstream>
+#include <algorithm>
 #include "nlohmann/json.hpp"
-
 using json = nlohmann::json;
 
-// -------------------- Data Structures --------------------
+enum class Status { Reading, Read, Wish };
+
 struct Book {
     int id;
     std::string title;
     std::string author;
-    std::string published;           // optional field for demo
-    std::vector<std::string> tags;
-    int currentPage = 0;
-    bool isRead = false;
+    std::string datePublished;
+    std::string genre;
+    int pageProgress = 0;
+    
+    bool inLibrary = true;       // Always true if the user owns/interacted with it
+    Status section;              // Reading, Read, or Wish
+
+    // Create a Book from JSON
+    static Book fromJSON(const nlohmann::json& j) {
+        Book b;
+        b.id = j["id"];
+        b.title = j["title"];
+        b.author = j["author"];
+        b.datePublished = j["datePublished"];
+        b.genre = j["genre"];
+        if (j.contains("pageProgress")) b.pageProgress = j["pageProgress"];
+        if (j.contains("inLibrary")) b.inLibrary = j["inLibrary"];
+        if (j.contains("section")) b.section = static_cast<Status>(j["section"]);
+        return b;
+    }
+
+    // Convert Book to JSON
+    json toJSON() const {
+        return json{
+            {"id", id},
+            {"title", title},
+            {"author", author},
+            {"datePublished", datePublished},
+            {"genre", genre},
+            {"pageProgress", pageProgress},
+            {"inLibrary", inLibrary},
+            {"section", static_cast<int>(section)}
+        };
+    }
 };
 
-// Sections
-std::unordered_map<int, Book> library;
-std::unordered_map<int, Book> reading;
+// Master list containing all books
+static std::vector<Book> libraryList;
 
-// -------------------- Load JSON --------------------
-void loadLibraryFromJSON(const std::string& filename) {
-    std::ifstream file(filename);
-    if (!file.is_open()) {
-        std::cerr << "Cannot open file: " << filename << "\n";
-        exit(1);
+namespace Books {
+
+    // ---- Utility ----
+    Book* findBook(int id) {
+        auto it = std::find_if(libraryList.begin(), libraryList.end(),
+                               [id](const Book& b){ return b.id == id; });
+        return it != libraryList.end() ? &(*it) : nullptr;
     }
 
-    json j;
-    file >> j;
+    // ---- Core Functions ----
+    bool addBook(const Book& book, Status section) {
+        if (findBook(book.id)) return false; // Already exists
 
-    for (auto& item : j) {
-        Book b;
-        b.id = item["id"];
-        b.title = item["title"];
-        b.author = item["author"];
-        b.published = item.value("published", "Unknown");
-        b.tags = item["tags"].get<std::vector<std::string>>();
-        library[b.id] = b;
+        Book copy = book;
+        copy.inLibrary = true;
+        copy.section = section;
+        libraryList.push_back(copy);
+        return true;
     }
-}
 
-// -------------------- Find Book by Title --------------------
-Book* findBookByTitle(const std::string& query) {
-    for (auto& pair : library) {
-        if (pair.second.title.find(query) != std::string::npos) {
-            return &pair.second;
+    bool removeBook(int id) {
+        auto it = std::remove_if(libraryList.begin(), libraryList.end(),
+                                 [id](const Book& b){ return b.id == id; });
+        if (it == libraryList.end()) return false;
+
+        libraryList.erase(it, libraryList.end());
+        return true;
+    }
+
+    bool changeSection(int id, Status newSection) {
+        Book* b = findBook(id);
+        if (!b) return false;
+
+        b->section = newSection;
+        return true;
+    }
+
+    bool updateProgress(int id, int page) {
+        Book* b = findBook(id);
+        if (!b || b->section != Status::Reading) return false;
+
+        b->pageProgress = page;
+        return true;
+    }
+
+    // ---- Retrieval ----
+    std::vector<Book> getBooks(std::optional<Status> section = std::nullopt) {
+        std::vector<Book> result;
+        for (auto& b : libraryList) {
+            if (!section.has_value() || b.section == section.value())
+                result.push_back(b);
         }
-    }
-    return nullptr;
-}
-
-// -------------------- Main --------------------
-int main() {
-    loadLibraryFromJSON("books.json");
-
-    std::cout << "Which book do you want to read? ";
-    std::string input;
-    std::getline(std::cin, input);
-
-    Book* selectedBook = findBookByTitle(input);
-    if (selectedBook) {
-        // Mark as currently reading
-        reading[selectedBook->id] = *selectedBook;
-
-        // Display details
-        std::cout << "\nYou are now reading:\n";
-        std::cout << "Title: " << selectedBook->title << "\n";
-        std::cout << "Author: " << selectedBook->author << "\n";
-        std::cout << "Published: " << selectedBook->published << "\n";
-        std::cout << "Tags: ";
-        for (const auto& tag : selectedBook->tags) std::cout << tag << " ";
-        std::cout << "\n";
-    } else {
-        std::cout << "Book not found in library.\n";
+        return result;
     }
 
-    return 0;
-}
+    // ---- Sorting ----
+    enum class SortBy { Title, Author, Date, Genre };
+
+    std::vector<Book> getBooksSorted(std::optional<Status> section, SortBy sortBy) {
+        auto books = getBooks(section);
+
+        auto cmp = [&](const Book &a, const Book &b) {
+            switch(sortBy) {
+                case SortBy::Title:  return a.title < b.title;
+                case SortBy::Author: return a.author < b.author;
+                case SortBy::Date:   return a.datePublished < b.datePublished;
+                case SortBy::Genre:  return a.genre < b.genre;
+            }
+            return false;
+        };
+
+        std::sort(books.begin(), books.end(), cmp);
+        return books;
+    }
+
+    // ---- Search ----
+    std::vector<Book> searchBooks(const std::string& term, std::optional<Status> section = std::nullopt) {
+        std::vector<Book> result;
+        std::string lowerTerm = term;
+        std::transform(lowerTerm.begin(), lowerTerm.end(), lowerTerm.begin(), ::tolower);
+
+        for (auto& b : getBooks(section)) {
+            std::string lowerTitle = b.title;
+            std::string lowerAuthor = b.author;
+            std::string lowerGenre = b.genre;
+
+            std::transform(lowerTitle.begin(), lowerTitle.end(), lowerTitle.begin(), ::tolower);
+            std::transform(lowerAuthor.begin(), lowerAuthor.end(), lowerAuthor.begin(), ::tolower);
+            std::transform(lowerGenre.begin(), lowerGenre.end(), lowerGenre.begin(), ::tolower);
+
+            if (lowerTitle.find(lowerTerm) != std::string::npos ||
+                lowerAuthor.find(lowerTerm) != std::string::npos ||
+                lowerGenre.find(lowerTerm) != std::string::npos)
+            {
+                result.push_back(b);
+            }
+        }
+
+        return result;
+    }
+.
+} // namespace Books
