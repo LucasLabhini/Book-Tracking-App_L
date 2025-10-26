@@ -5,7 +5,6 @@
 using json = nlohmann::json;
 
 static const std::string LIBRARY_FILE = "books.json";
-
 Book Book::fromJSON(const nlohmann::json& j) {
     Book b;
     b.id = j["id"];
@@ -31,7 +30,6 @@ nlohmann::json Book::toJSON() const {
         {"section", static_cast<int>(section)}
     };
 }
-
 namespace Books {
 
 // Helper: load library from JSON file
@@ -67,26 +65,33 @@ Book* findBook(int id, std::vector<Book>& books) {
     return it != books.end() ? &(*it) : nullptr;
 }
 
-bool addBook(const Book& book, Status section) {
-    auto books = loadLibrary();
-    if (findBook(book.id, books)) return false;
+bool addBook(const Book &b, Status section) {
+    auto books = loadLibrary(); // load JSON
 
-    Book copy = book;
-    copy.inLibrary = true;
-    copy.section = section;
-    books.push_back(copy);
-    saveLibrary(books);
-    return true;
+    for (auto &book : books) {
+        if (book.id == b.id) {
+            if (!book.inLibrary) {
+                // Reactivate the book
+                book.inLibrary = true;
+                book.section = section;  // optional: update section
+                saveLibrary(books);      // persist change
+                return true;
+            }
+            return false; // already in library
+        }
+    }
+
+    // Book not found in JSON -> do nothing
+    return false;
 }
 
 bool removeBook(int id) {
-    auto books = loadLibrary();
-    auto it = std::remove_if(books.begin(), books.end(),
-                             [id](const Book& b){ return b.id == id; });
-    if (it == books.end()) return false;
+    auto books = loadLibrary();  // Load the library from the file
+    Book* b = findBook(id, books);
+    if (!b || !b->inLibrary) return false;
 
-    books.erase(it, books.end());
-    saveLibrary(books);
+    b->inLibrary = false;
+    saveLibrary(books);           // Save the changes
     return true;
 }
 
@@ -124,10 +129,10 @@ std::vector<Book> getBooksSorted(std::optional<Status> section, SortBy sortBy) {
     auto books = getBooks(section);
     auto cmp = [&](const Book &a, const Book &b) {
         switch(sortBy) {
-            case SortBy::Title:  return a.title < b.title;
-            case SortBy::Author: return a.author < b.author;
-            case SortBy::Date:   return a.datePublished < b.datePublished;
-            case SortBy::Genre:  return a.genre < b.genre;
+        case SortBy::Title:  return a.title < b.title;
+        case SortBy::Author: return a.author < b.author;
+        case SortBy::Date:   return a.datePublished < b.datePublished;
+        case SortBy::Genre:  return a.genre < b.genre;
         }
         return false;
     };
